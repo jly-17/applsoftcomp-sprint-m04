@@ -74,7 +74,7 @@ Submit by pushing to github and posting the URL to Brightspace.
 
 ## FAQ
 
-**Teams?** Yes. Team repo, list members in `REPORT.md`, all submit same URL.
+**Teams?** Yes. Team repo, list members in `NOTE.md`, all submit same URL.
 
 **Embedding model?** You can use any models. Smaller is ideal in light of reproducibility. Larger OK, document the model used.
 
