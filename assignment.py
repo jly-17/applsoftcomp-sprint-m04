@@ -11,7 +11,7 @@
 #     "drawdata==0.5.0",
 #     "anywidget>=0.9",
 #     "seaborn==0.13.2",
-#     "altair>=5.0",
+#     "altair==6.0.0",
 # ]
 # ///
 
@@ -94,8 +94,12 @@ def _(mo):
 @app.cell
 def _(model):
     _words = ["Harvard University", "MIT", "Swarthmore College", "community college"]
+
+    # This is how the embedding model turns text into vectors. Each text gets mapped to a point in a 384-dimensional space.
     _emb = model.encode(_words, normalize_embeddings=True)
+
     print(f"Each text → a vector of {_emb.shape[1]} numbers.\n")
+
     for _w, _e in zip(_words, _emb):
         print(f"  '{_w}' (first 6 dims): {_e[:6].round(3)}")
     return
@@ -113,15 +117,18 @@ def _(mo):
 
 
 @app.cell
-def _(model):
+def _(model, np):
     _pairs = [
         ("Harvard University", "Yale University"),
         ("MIT", "Georgia Tech"),
         ("Harvard University", "community college"),
     ]
-    _e = model.encode([w for p in _pairs for w in p], normalize_embeddings=True)
-    for _i, (_a, _b) in enumerate(_pairs):
-        print(f"  {_a:<30} ↔  {_b:<25}  sim = {_e[2 * _i] @ _e[2 * _i + 1]:.3f}")
+
+    for _pair in _pairs:
+        _left, _right = _pair
+        _emb = model.encode([_left, _right], normalize_embeddings=True)
+        _sim = np.dot(_emb[0], _emb[1])
+        print(f"  {_left:<20} ↔  {_right:<20}  sim = {_sim:.3f}")
     return
 
 
@@ -184,7 +191,7 @@ def _(mo):
 
 @app.cell
 def _(ScatterWidget, mo):
-    widget = mo.ui.anywidget(ScatterWidget(width=820, height=580))
+    widget = mo.ui.anywidget(ScatterWidget(width=820, height=480, point_size=12))
     widget
     return (widget,)
 
@@ -214,22 +221,42 @@ def _(mo):
     return
 
 
-@app.function
-def make_axis(positive_words, negative_words, embedding_model):
-    """Return a unit-length semantic axis from two word sets."""
-    import numpy as np
+@app.cell
+def _(np):
+    def make_axis(positive_words, negative_words, embedding_model):
+        """Return a unit-length semantic axis from two word sets."""
 
-    pos_emb = embedding_model.encode(positive_words, normalize_embeddings=True)
-    neg_emb = embedding_model.encode(negative_words, normalize_embeddings=True)
-    v = pos_emb.mean(axis=0) - neg_emb.mean(axis=0)
-    return v / (np.linalg.norm(v) + 1e-10)
+        # get the embeddings for each pole
+        pos_emb = embedding_model.encode(positive_words, normalize_embeddings=True)
+        neg_emb = embedding_model.encode(negative_words, normalize_embeddings=True)
+
+        # Compute the pole centroids
+        # axis = 0 means "average across the rows, keep the columns (dims) intact"
+        # since pos_emb is shape (num_pos_words, embedding_dim), the mean is shape (embedding_dim,)
+        pole_pos = pos_emb.mean(axis=0)  # (embedding_dim,)
+        pole_neg = neg_emb.mean(axis=0)  # (embedding_dim,)
+
+        # The axis is the difference between the two centroids, normalized to unit length.
+        v = pole_pos - pole_neg
+
+        v = v / (np.linalg.norm(v) + 1e-10)  # add small epsilon to prevent division by zero
+
+        return v / (np.linalg.norm(v) + 1e-10)
+
+    return (make_axis,)
 
 
 @app.function
 def score_words(words, axis, embedding_model):
     """Project each word onto the axis. Returns one score per word."""
+
     emb = embedding_model.encode(list(words), normalize_embeddings=True)
-    return emb @ axis
+
+    # Projection to the axis is just a dot product (since the axis is unit-length).
+    # @ is matrix multiplication in NumPy. Since `emb` is shape (num_words, embedding_dim) and `axis` is shape (embedding_dim,), the result is shape (num_words,), which is exactly what we want: one score per word.
+    proj = emb @ axis
+
+    return proj
 
 
 @app.cell(hide_code=True)
@@ -238,10 +265,10 @@ def _(mo):
     ---
     ## Part 3 — Worked Example: World Cities
 
-    A small list of ~50 cities — mostly major capitals and hubs, plus a
-    handful of smaller but famously-distinctive ones (Kyoto, Venice,
-    Marrakech, Reykjavik, Havana, Kathmandu). Each city has a **region**
-    attribute (continent) that we will use as the color encoding.
+    The `data/cities.csv` file lists several hundred cities worldwide
+    with their country, region, coordinates, population, founding date,
+    and a GaWC business-activity rating. We will score every city along
+    two semantic axes and color the scatter by **region** (continent).
 
     Study this example, then build your own submission using whichever
     case-study dataset (or your own data) you choose.
@@ -250,67 +277,41 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Load the dataset
+
+    The cities live in `data/cities.csv`. We load them with **pandas**
+    and set explicit dtypes up front — this is a good habit for any
+    tabular pipeline:
+
+    - It makes your column assumptions explicit and catches typos or
+      format drift early.
+    - `"category"` is memory-efficient for low-cardinality text columns
+      (like `region`) and gives you ordered plotting for free.
+    - `"Int64"` (capital `I`) is pandas' *nullable* integer type — use
+      it for integer columns that have missing values, like `population`.
+    - Columns with mixed formats — e.g. `founded`, which contains entries
+      such as `"500s BCE"` and `"6th c."` alongside ordinary years —
+      stay as `"string"` so pandas does not silently coerce them to NaN.
+    """)
+    return
+
+
+@app.cell
 def _(pd):
-    df = pd.DataFrame(
-        [
-            # North America (9)
-            ("New York",       "North America"),
-            ("Los Angeles",    "North America"),
-            ("San Francisco",  "North America"),
-            ("Chicago",        "North America"),
-            ("Boston",         "North America"),
-            ("Toronto",        "North America"),
-            ("Vancouver",      "North America"),
-            ("Mexico City",    "North America"),
-            ("Miami",          "North America"),
-            # Europe (14)
-            ("London",         "Europe"),
-            ("Paris",          "Europe"),
-            ("Berlin",         "Europe"),
-            ("Rome",           "Europe"),
-            ("Amsterdam",      "Europe"),
-            ("Madrid",         "Europe"),
-            ("Vienna",         "Europe"),
-            ("Stockholm",      "Europe"),
-            ("Zurich",         "Europe"),
-            ("Lisbon",         "Europe"),
-            ("Prague",         "Europe"),
-            ("Athens",         "Europe"),
-            ("Venice",         "Europe"),
-            ("Reykjavik",      "Europe"),
-            # Asia (12)
-            ("Tokyo",          "Asia"),
-            ("Kyoto",          "Asia"),
-            ("Seoul",          "Asia"),
-            ("Beijing",        "Asia"),
-            ("Shanghai",       "Asia"),
-            ("Hong Kong",      "Asia"),
-            ("Singapore",      "Asia"),
-            ("Bangkok",        "Asia"),
-            ("Mumbai",         "Asia"),
-            ("Delhi",          "Asia"),
-            ("Taipei",         "Asia"),
-            ("Kathmandu",      "Asia"),
-            # Middle East & Africa (7)
-            ("Dubai",          "Middle East & Africa"),
-            ("Istanbul",       "Middle East & Africa"),
-            ("Tel Aviv",       "Middle East & Africa"),
-            ("Cairo",          "Middle East & Africa"),
-            ("Marrakech",      "Middle East & Africa"),
-            ("Cape Town",      "Middle East & Africa"),
-            ("Nairobi",        "Middle East & Africa"),
-            # South America (5)
-            ("São Paulo",      "South America"),
-            ("Rio de Janeiro", "South America"),
-            ("Buenos Aires",   "South America"),
-            ("Lima",           "South America"),
-            ("Havana",         "South America"),
-            # Oceania (3)
-            ("Sydney",         "Oceania"),
-            ("Melbourne",      "Oceania"),
-            ("Auckland",       "Oceania"),
-        ],
-        columns=["name", "region"],
+    df = pd.read_csv(
+        "data/cities.csv",
+        dtype={
+            "city":              "string",
+            "country":           "string",
+            "region":            "category",
+            "lat":               "float64",
+            "lon":               "float64",
+            "population":        "Int64",   # nullable integer
+            "founded":           "string",  # mixed: "1624", "500s BCE", "6th c."
+            "business_activity": "string",
+        },
     )
     print(f"{len(df)} cities across {df['region'].nunique()} regions.")
     df.head()
@@ -325,11 +326,32 @@ def _(mo):
     A **good axis** is:
 
     - **Well-separated**: the + and − word sets should be far apart in
-      embedding space (pole distance ≥ 0.3).
+      embedding space (pole distance ≥ 0.3; not a strict requirement but a rule-of-thumb).
     - **Discriminative**: when projected onto your dataset it should spread
       the points out, not pile them in the middle.
     - **Orthogonal to the other axis**: the two axes should capture
       different aspects of the data.
+
+    #### Why multiple words per pole — why not just one?
+
+    A single word's embedding is **noisy**. It carries the quirks of how
+    that specific word appears in the training data: rare senses,
+    collocations, polysemy, branding. If you build an axis from just two
+    single words, those quirks *become* the axis.
+
+    Averaging 3–6 words per pole fixes this three ways:
+
+    1. **It cancels idiosyncratic noise.** Per-word wobble averages out;
+       only the direction the pole words *share* survives.
+    2. **It triangulates the concept.** "skyscrapers", "stock exchange",
+       and "corporate headquarters" each lean toward *financial hub* from
+       a slightly different angle. The centroid lies in their intersection,
+       which is a cleaner definition of the concept than any single word.
+    3. **It pushes the poles apart.** A tighter centroid gives a sharper
+       axis direction and better separation in the projected scores.
+
+    Rule of thumb: **3–6 words per pole**. Fewer is too noisy; many more
+    starts to dilute the concept by pulling in unrelated vocabulary.
 
     Our two axes for cities:
 
@@ -337,41 +359,96 @@ def _(mo):
     - **Vertical** — *cold/northern climate* (−) ↔ *tropical/warm climate* (+)
 
     These are conceptually independent: Singapore is both tropical *and* a
-    finance hub; Reykjavik is cold and not a finance hub; Venice is warm-ish
+    finance hub; Reykjavik is cold and not a finance hub; Rome is warm-ish
     but heritage-heavy, not financial.
     """)
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    #### Axis 1 — historic/heritage (−) ↔ finance/business hub (+)
+
+    Notice that the pole words each evoke the concept from a different
+    angle — literal ("skyscrapers"), institutional ("stock exchange"),
+    and abstract ("global financial hub"). That diversity is the point:
+    the centroid lies in the shared-meaning intersection of all of them.
+    """)
+    return
+
+
 @app.cell
-def _(df, model):
-    # Axis 1 — historical/heritage vs modern financial hub
+def _(make_axis, model):
     axis1_pos = [
-        "global financial hub", "international banking center",
-        "corporate headquarters", "stock exchange",
-        "skyscrapers", "business district",
+        "global financial hub",
+        "international banking center",
+        "corporate headquarters",
+        "stock exchange",
+        "skyscrapers",
+        "business district",
     ]
     axis1_neg = [
-        "ancient city", "historic old town", "UNESCO world heritage site",
-        "medieval architecture", "ruins and monuments", "cultural heritage",
+        "ancient city",
+        "historic old town",
+        "UNESCO world heritage site",
+        "medieval architecture",
+        "ruins and monuments",
+        "cultural heritage",
     ]
+    axis_business = make_axis(axis1_pos, axis1_neg, model)
+    return (axis_business,)
 
-    # Axis 2 — cold/northern climate vs tropical/warm climate
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    #### Axis 2 — cold/northern climate (−) ↔ tropical/warm climate (+)
+
+    The two climate poles should barely overlap in normal text, so the
+    axis direction is strong and the resulting projection cleanly sorts
+    cities by how their descriptions lean thermally.
+    """)
+    return
+
+
+@app.cell
+def _(make_axis, model):
     axis2_pos = [
-        "tropical climate", "hot and humid", "palm trees",
-        "equatorial weather", "warm beaches",
+        "tropical climate",
+        "hot and humid",
+        "palm trees",
+        "equatorial weather",
+        "warm beaches",
     ]
     axis2_neg = [
-        "arctic climate", "cold snowy winters", "northern latitude",
-        "Nordic weather", "sub-zero temperatures",
+        "arctic climate",
+        "cold snowy winters",
+        "northern latitude",
+        "Nordic weather",
+        "sub-zero temperatures",
     ]
-
-    axis_business = make_axis(axis1_pos, axis1_neg, model)
     axis_climate = make_axis(axis2_pos, axis2_neg, model)
+    return (axis_climate,)
 
-    x = score_words(df["name"].tolist(), axis_business, model)
-    y = score_words(df["name"].tolist(), axis_climate, model)
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    #### Score every city along both axes
+
+    For each city name we compute its embedding and take the dot product
+    with each axis. The result is two numbers per city — its `x` and `y`
+    coordinates in the 2D semantic space — which we attach to the
+    DataFrame.
+    """)
+    return
+
+
+@app.cell
+def _(axis_business, axis_climate, df, model):
+    x = score_words(df["city"].tolist(), axis_business, model)
+    y = score_words(df["city"].tolist(), axis_climate, model)
     df_scored = df.assign(x=x, y=y)
     df_scored.head()
     return (df_scored,)
@@ -401,53 +478,53 @@ def _(mo):
 def _(alt, df_scored):
     # Okabe–Ito palette, one color per region.
     REGION_COLORS = {
-        "North America":        "#0072B2",
-        "Europe":               "#E69F00",
-        "Asia":                 "#D55E00",
-        "Middle East & Africa": "#009E73",
-        "South America":        "#CC79A7",
-        "Oceania":              "#56B4E9",
+        "Africa":   "#009E73",
+        "Americas": "#0072B2",
+        "Asia":     "#D55E00",
+        "Europe":   "#E69F00",
+        "Oceania":  "#56B4E9",
     }
 
-    _base = alt.Chart(df_scored).encode(
-        x=alt.X(
-            "x:Q",
-            title="← historic / heritage          finance / business hub →",
-            scale=alt.Scale(zero=False, padding=20),
-        ),
-        y=alt.Y(
-            "y:Q",
-            title="← cold / northern          tropical / warm →",
-            scale=alt.Scale(zero=False, padding=20),
-        ),
-        color=alt.Color(
-            "region:N",
-            scale=alt.Scale(
-                domain=list(REGION_COLORS.keys()),
-                range=list(REGION_COLORS.values()),
-            ),
-            legend=alt.Legend(title="Region"),
-        ),
-        tooltip=[
-            alt.Tooltip("name:N", title="City"),
-            alt.Tooltip("region:N", title="Region"),
-            alt.Tooltip("x:Q", title="business-hub score", format=".3f"),
-            alt.Tooltip("y:Q", title="tropical-warm score", format=".3f"),
-        ],
-    )
-
-    _points = _base.mark_circle(size=140, opacity=0.85, stroke="white", strokeWidth=1)
-    _labels = _base.mark_text(align="left", dx=7, dy=-4, fontSize=10, color="#222").encode(
-        text="name:N"
-    )
-
     chart = (
-        (_points + _labels)
+        alt.Chart(df_scored)
+        .mark_circle(size=90, opacity=0.8, stroke="white", strokeWidth=0.6)
+        .encode(
+            x=alt.X(
+                "x:Q",
+                title="← historic / heritage          finance / business hub →",
+                scale=alt.Scale(zero=False, padding=20),
+                axis=alt.Axis(grid=False),
+            ),
+            y=alt.Y(
+                "y:Q",
+                title="← cold / northern          tropical / warm →",
+                scale=alt.Scale(zero=False, padding=20),
+                axis=alt.Axis(grid=False),
+            ),
+            color=alt.Color(
+                "region:N",
+                scale=alt.Scale(
+                    domain=list(REGION_COLORS.keys()),
+                    range=list(REGION_COLORS.values()),
+                ),
+                legend=alt.Legend(title="Region"),
+            ),
+            tooltip=[
+                alt.Tooltip("city:N", title="City"),
+                alt.Tooltip("country:N", title="Country"),
+                alt.Tooltip("region:N", title="Region"),
+                alt.Tooltip("x:Q", title="business-hub score", format=".3f"),
+                alt.Tooltip("y:Q", title="tropical-warm score", format=".3f"),
+            ],
+        )
         .properties(
-            width=700,
+            width=720,
             height=500,
             title="World cities in a 2D semantic space (hover for details)",
         )
+        .configure_view(strokeWidth=0)
+        .configure_axis(labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelFontSize=11, titleFontSize=12)
         .interactive()  # pan + zoom
     )
     chart
@@ -473,19 +550,19 @@ def _(mo):
     **Example observation for the plot above:**
 
     > The two axes partition the cities into four interpretable quadrants.
-    > New York, Hong Kong, Singapore, London, and Zurich sit firmly in the
-    > "finance hub" region; Kyoto, Venice, Athens, Marrakech, and Prague
+    > New York City, Singapore, Shanghai, London, and Tokyo sit firmly in
+    > the "finance hub" region; Athens, Rome, Prague, Kathmandu, and Havana
     > anchor the "heritage" side. The climate axis pulls Reykjavik,
-    > Stockholm, and Toronto north-cold, while Bangkok, Mumbai, Havana, and
-    > Singapore go tropical-warm. Notable surprises: Dubai lands in the
-    > "tropical + finance" quadrant — unusual for that combination, but
-    > consistent with how the city is portrayed online. Venice and
-    > Reykjavik occupy nearly-opposite corners despite both being small
-    > European cities, which shows that the region label (color) and the
-    > two axes carry genuinely different information. A third axis could
-    > usefully encode *coastal vs inland* geography — Denver-type or
-    > Kathmandu-type cities are currently indistinguishable from coastal
-    > peers with similar economic / climate profiles.
+    > Stockholm, Helsinki, and Toronto north-cold, while Bangkok, Mumbai,
+    > Manila, and Singapore go tropical-warm. Notable surprises: Abu Dhabi
+    > and Doha land in the "tropical + finance" quadrant — an unusual
+    > combination, but consistent with how the oil-era Gulf hubs are
+    > portrayed online. Rome and Reykjavik sit in near-opposite corners
+    > despite sharing the same continent, showing that the region color
+    > encoding carries genuinely different information from the two axes.
+    > A third axis could usefully encode *coastal vs inland* geography —
+    > landlocked cities like Kathmandu are currently indistinguishable
+    > from coastal peers with similar economic / climate profiles.
 
     ---
 
@@ -518,7 +595,7 @@ def _():
     from sentence_transformers import SentenceTransformer
     from drawdata import ScatterWidget
 
-    return ScatterWidget, SentenceTransformer, alt, mo, pd, plt
+    return ScatterWidget, SentenceTransformer, alt, mo, np, pd
 
 
 @app.function(hide_code=True)
@@ -573,9 +650,7 @@ def plot_semaxis_2d(df):
 
     sns.set_theme(style="white", context="talk", font_scale=0.85)
 
-    fig, (ax1, ax2) = plt.subplots(
-        1, 2, figsize=(12, 5), gridspec_kw={"width_ratios": [2, 1]}
-    )
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), gridspec_kw={"width_ratios": [2, 1]})
 
     colors = df["color"].unique().tolist() if len(df) else []
     if len(colors) < 2:
